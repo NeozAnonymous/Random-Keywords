@@ -335,7 +335,8 @@ def main_app():
                             delete_entry(selected_idx)
                             st.rerun()
         else:
-            st.info("No data found for this account.")
+            #st.info("No data found for this account.")
+            pass
 
     # === TAB 2: RANDOM RETRIEVE ===
     with tab_random:
