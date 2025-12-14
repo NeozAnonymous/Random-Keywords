@@ -4,6 +4,7 @@ import pandas as pd
 import json
 import os
 import hashlib
+from io import StringIO
 
 # --- Configuration ---
 USERS_FILE = "users.json"
@@ -124,6 +125,9 @@ def add_entry(keyword, selected_tags, new_tags_input):
                 st.session_state.all_tags.add(tag)
 
     entry = {"Keyword": keyword, "Tags": final_tags}
+    
+    # Check if keyword already exists, if so, just update tags (Optional logic, currently append)
+    # For this specific function, we will append, but in production checking for dupes is better.
     st.session_state.db.append(entry)
     save_data(st.session_state.username)
     st.success(f"Added '{keyword}'")
@@ -161,6 +165,74 @@ def delete_entry(index):
         st.toast(f"Deleted '{removed['Keyword']}'")
         st.session_state.random_result = None
 
+# --- Import/Export Functions ---
+def convert_db_to_csv():
+    """Converts the session database list to a CSV string."""
+    if not st.session_state.db:
+        return ""
+    
+    # Create DataFrame
+    df = pd.DataFrame(st.session_state.db)
+    
+    # Join tags list into string "tag1, tag2"
+    if 'Tags' in df.columns:
+        df['Tags'] = df['Tags'].apply(lambda x: ', '.join(x) if isinstance(x, list) else "")
+    
+    return df.to_csv(index=False).encode('utf-8')
+
+def process_csv_upload(uploaded_file):
+    """Reads CSV and merges into database."""
+    try:
+        df = pd.read_csv(uploaded_file)
+        
+        # Validation
+        if 'Keyword' not in df.columns:
+            st.error("CSV must contain a 'Keyword' column.")
+            return
+
+        # Initialize counters
+        added_count = 0
+        updated_count = 0
+        
+        # Helper to find existing entry index by keyword
+        existing_map = {entry['Keyword']: i for i, entry in enumerate(st.session_state.db)}
+
+        for _, row in df.iterrows():
+            kw = str(row['Keyword']).strip()
+            if not kw: 
+                continue
+
+            # Parse tags
+            tags_str = str(row['Tags']) if 'Tags' in df.columns and pd.notna(row['Tags']) else ""
+            new_tags = [t.strip() for t in tags_str.split(',') if t.strip()]
+            
+            # Update global tag set
+            for t in new_tags:
+                st.session_state.all_tags.add(t)
+
+            if kw in existing_map:
+                # Update existing entry
+                idx = existing_map[kw]
+                current_tags = st.session_state.db[idx]['Tags']
+                # Merge unique tags
+                for t in new_tags:
+                    if t not in current_tags:
+                        current_tags.append(t)
+                st.session_state.db[idx]['Tags'] = current_tags
+                updated_count += 1
+            else:
+                # Add new entry
+                st.session_state.db.append({"Keyword": kw, "Tags": new_tags})
+                # Update map prevents duplicates within the same CSV upload
+                existing_map[kw] = len(st.session_state.db) - 1
+                added_count += 1
+
+        save_data(st.session_state.username)
+        st.success(f"Import complete! Added {added_count} new entries, updated {updated_count} existing entries.")
+        
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
+
 # --- Main App Interface ---
 def main_app():
     st.sidebar.markdown(f"👤 Logged in as: **{st.session_state.username}**")
@@ -173,6 +245,37 @@ def main_app():
 
     # === TAB 1: MANAGE DATA ===
     with tab_manage:
+        # Import / Export Section
+        with st.expander("📂 Import / Export CSV", expanded=False):
+            col_ex, col_im = st.columns(2)
+            
+            # Export Column
+            with col_ex:
+                st.subheader("Export Data")
+                st.caption("Download your keywords and tags as a CSV file.")
+                csv_data = convert_db_to_csv()
+                if csv_data:
+                    st.download_button(
+                        label="📥 Download CSV",
+                        data=csv_data,
+                        file_name=f"{st.session_state.username}_keywords.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning("No data to export.")
+
+            # Import Column
+            with col_im:
+                st.subheader("Import Data")
+                st.caption("Upload CSV with columns: `Keyword`, `Tags`")
+                uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+                if uploaded_file is not None:
+                    if st.button("Process Import"):
+                        process_csv_upload(uploaded_file)
+                        st.rerun()
+
+        st.divider()
+
         with st.expander("➕ Add New Entry", expanded=False):
             with st.form("add_form", clear_on_submit=True):
                 c1, c2 = st.columns(2)
@@ -194,7 +297,8 @@ def main_app():
             # Show Table
             df = pd.DataFrame(st.session_state.db)
             df_display = df.copy()
-            df_display['Tags'] = df_display['Tags'].apply(lambda x: ', '.join(x))
+            # Convert list of tags to string for display
+            df_display['Tags'] = df_display['Tags'].apply(lambda x: ', '.join(x) if isinstance(x, list) else "")
             st.dataframe(df_display, use_container_width=True)
             
             st.write("### Edit Entry")
